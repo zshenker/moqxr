@@ -25,7 +25,7 @@ namespace {
 
 void validate_packaging(const PublisherConfig& config) {
     if (config.media_packaging == MediaPackaging::kLoc) {
-        if (!is_draft18_or_later(config.draft_version)) throw std::runtime_error("LOC-04 requires draft 18 or 21");
+        if (!is_draft18_or_later(config.draft_version)) throw std::runtime_error("LOC-04 requires draft 18 or later");
         if (!config.split_cmaf_chunks || config.live_stream_per_object) throw std::runtime_error("LOC requires one sample per object and a stream per GOP");
     }
     if (config.media_packaging == MediaPackaging::kLocmaf &&
@@ -48,6 +48,8 @@ std::string webtransport_protocol_offer(DraftVersion version) {
             return "\"moqt-21\"";
         case DraftVersion::kDraft22:
             return "\"moqt-22\"";
+        case DraftVersion::kDraft23:
+            return "\"moqt-23\"";
     }
 
     return "";
@@ -105,7 +107,8 @@ transport::FailureKind publish_failure_kind(
 
 constexpr std::size_t kMaxGoawayMigrations = 8;
 
-transport::EndpointConfig migration_endpoint(const transport::EndpointConfig& current, std::string_view uri) {
+transport::EndpointConfig migration_endpoint(const transport::EndpointConfig& current, std::string_view uri,
+                                             DraftVersion draft) {
     if (uri.empty())
         return current;
     const std::string_view scheme = uri.starts_with("moqt://") ? "moqt://" : "https://";
@@ -154,10 +157,10 @@ transport::EndpointConfig migration_endpoint(const transport::EndpointConfig& cu
         scheme == "moqt://" ? transport::TransportKind::kRawQuic : transport::TransportKind::kWebTransport;
     if (endpoint.transport != current.transport) {
         endpoint.alpn =
-            endpoint.transport == transport::TransportKind::kRawQuic ? default_alpn(DraftVersion::kDraft22) : "h3";
+            endpoint.transport == transport::TransportKind::kRawQuic ? default_alpn(draft) : "h3";
         endpoint.application_protocol = endpoint.transport == transport::TransportKind::kRawQuic
-                                            ? default_alpn(DraftVersion::kDraft22)
-                                            : webtransport_protocol_offer(DraftVersion::kDraft22);
+                                            ? default_alpn(draft)
+                                            : webtransport_protocol_offer(draft);
     }
     endpoint.host = std::string(host);
     endpoint.port = static_cast<std::uint16_t>(port);
@@ -170,12 +173,12 @@ transport::EndpointConfig migration_endpoint(const transport::EndpointConfig& cu
 }
 
 transport::TransportStatus prepare_migration(const transport::TransportStatus& status, std::size_t migrations,
-                                             transport::EndpointConfig& endpoint) {
+                                             DraftVersion draft, transport::EndpointConfig& endpoint) {
     if (migrations == kMaxGoawayMigrations) {
         return transport::TransportStatus::failure("GOAWAY migration limit exceeded");
     }
     try {
-        endpoint = migration_endpoint(endpoint, *status.migration_uri);
+        endpoint = migration_endpoint(endpoint, *status.migration_uri, draft);
         return transport::TransportStatus::success();
     } catch (const std::runtime_error& error) {
         return transport::TransportStatus::failure(error.what());
@@ -183,6 +186,11 @@ transport::TransportStatus prepare_migration(const transport::TransportStatus& s
 }
 
 #ifdef OPENMOQ_ENABLE_LIBMOQ_PUBLISHER
+// libmoq publishes drafts 16 and 18 only; later drafts use MoqtSession.
+bool libmoq_publishes_draft(DraftVersion draft) {
+    return draft == DraftVersion::kDraft16 || draft == DraftVersion::kDraft18;
+}
+
 // libmoq's media sender numbers Group IDs itself and offers no setting for the
 // first one, so the libmoq routes refuse a non-zero initial_group_id rather
 // than publish from 0 while the caller expects otherwise.
@@ -307,12 +315,13 @@ transport::TransportStatus Publisher::publish(const PreparedPublish& prepared,
                                               const transport::TlsConfig& tls,
                                               bool endpoint_alpn_overridden) const {
 #ifdef OPENMOQ_ENABLE_LIBMOQ_PUBLISHER
-    // Batch publishing prefers the libmoq service tier unless a custom
-    // TransportFactory was injected (tests still exercise the local path).
-    // The live paths (stdin, SRT, LiveObjectSource) route to libmoq in their
-    // own methods below; the MoqtSession transport now only serves injected-
-    // factory callers and builds without libmoq.
-    if (!transport_factory_injected_) {
+    // Batch publishing on drafts 16 and 18 prefers the libmoq service tier
+    // unless a custom TransportFactory was injected (tests still exercise the
+    // local path). The live paths (stdin, SRT, LiveObjectSource) route to
+    // libmoq in their own methods below; the MoqtSession transport serves
+    // injected-factory callers, drafts libmoq does not speak, and builds
+    // without libmoq.
+    if (routes_to_libmoq()) {
         if (config_.media_packaging == MediaPackaging::kLoc || config_.media_packaging == MediaPackaging::kLocmaf ||
             std::any_of(prepared.plan.tracks.begin(), prepared.plan.tracks.end(),
                         [](const auto& track) { return track.packaging == "loc" || track.packaging == "locmaf"; })) {
@@ -421,10 +430,11 @@ transport::TransportStatus Publisher::publish(const PreparedPublish& prepared,
         if (!status.ok && stop_requested()) {
             return finish_stopped_publish(active, true);
         }
-        if (!status.ok && status.migration_uri && config_.draft_version == DraftVersion::kDraft22) {
+        if (!status.ok && status.migration_uri && is_draft22_or_later(config_.draft_version)) {
             static_cast<void>(active->close(0));
             clear_active_session(active, false, {});
-            const auto migration_status = prepare_migration(status, migrations, resolved_endpoint);
+            const auto migration_status =
+                prepare_migration(status, migrations, config_.draft_version, resolved_endpoint);
             if (!migration_status.ok) {
                 clear_active_session(active, false, migration_status.message);
                 return migration_status;
@@ -486,10 +496,10 @@ transport::TransportStatus Publisher::publish_live(const LiveIngestConfig& inges
                                                    bool endpoint_alpn_overridden,
                                                    LiveResumeState* resume) const {
 #ifdef OPENMOQ_ENABLE_LIBMOQ_PUBLISHER
-    if (!transport_factory_injected_ && (config_.media_packaging == MediaPackaging::kLoc || config_.media_packaging == MediaPackaging::kLocmaf)) {
+    if (routes_to_libmoq() && (config_.media_packaging == MediaPackaging::kLoc || config_.media_packaging == MediaPackaging::kLocmaf)) {
         return transport::TransportStatus::failure("LOC/LOCMAF is not supported by the libmoq publishing backend");
     }
-    if (!transport_factory_injected_ && ingest.use_stdin && ingest.srt_callers.empty() &&
+    if (routes_to_libmoq() && ingest.use_stdin && ingest.srt_callers.empty() &&
         endpoint.webtransport_allow_missing_reset_stream_at) {
         return transport::TransportStatus::failure(
             "--webtransport-allow-missing-reset-stream-at is not supported by the libmoq publishing backend");
@@ -497,7 +507,7 @@ transport::TransportStatus Publisher::publish_live(const LiveIngestConfig& inges
     // Live stdin and SRT publishing prefer the libmoq service tier unless a
     // custom TransportFactory was injected. (publish_live_objects routes to
     // libmoq in its own method.)
-    if (!transport_factory_injected_ && ingest.use_stdin && ingest.srt_callers.empty()) {
+    if (routes_to_libmoq() && ingest.use_stdin && ingest.srt_callers.empty()) {
         if (config_.initial_group_id != 0) {
             return transport::TransportStatus::failure(kLibmoqInitialGroupIdUnsupported);
         }
@@ -537,7 +547,7 @@ transport::TransportStatus Publisher::publish_live(const LiveIngestConfig& inges
     // SRT-only live publishing also prefers the libmoq service tier. Mixed
     // stdin+SRT does not match either branch and falls through to the old path
     // below, which rejects it (consistent with existing validation).
-    if (!transport_factory_injected_ && !ingest.use_stdin && !ingest.srt_callers.empty()) {
+    if (routes_to_libmoq() && !ingest.use_stdin && !ingest.srt_callers.empty()) {
         if (config_.initial_group_id != 0) {
             return transport::TransportStatus::failure(kLibmoqInitialGroupIdUnsupported);
         }
@@ -672,7 +682,7 @@ transport::TransportStatus Publisher::publish_live(const LiveIngestConfig& inges
         if (!status.ok && stop_requested()) {
             return finish_stopped_publish(active, true);
         }
-        if (!status.ok && status.migration_uri && config_.draft_version == DraftVersion::kDraft22) {
+        if (!status.ok && status.migration_uri && is_draft22_or_later(config_.draft_version)) {
             const auto snapshot = active->session->publish_stats();
             prior_bytes += snapshot.bytes_published;
             prior_objects += snapshot.objects_published;
@@ -697,7 +707,8 @@ transport::TransportStatus Publisher::publish_live(const LiveIngestConfig& inges
 
             static_cast<void>(active->close(0));
             clear_active_session(active, false, {});
-            const auto migration_status = prepare_migration(status, migrations, resolved_endpoint);
+            const auto migration_status =
+                prepare_migration(status, migrations, config_.draft_version, resolved_endpoint);
             if (!migration_status.ok) {
                 clear_active_session(active, false, migration_status.message);
                 return migration_status;
@@ -770,7 +781,7 @@ transport::TransportStatus Publisher::publish_live_objects(const LiveObjectSourc
     // TransportFactory was injected (legacy MoqtSession tests). libmoq requires
     // real media metadata per track; a bare/legacy LiveTrack fails with a clear
     // message rather than being faked as a generic media track.
-    if (!transport_factory_injected_ && !source_supplies_catalog) {
+    if (routes_to_libmoq() && !source_supplies_catalog) {
         if (config_.initial_group_id != 0) {
             return transport::TransportStatus::failure(kLibmoqInitialGroupIdUnsupported);
         }
@@ -844,7 +855,7 @@ transport::TransportStatus Publisher::publish_live_objects(const LiveObjectSourc
     bool catalog_chain_complete = false;
     std::optional<std::size_t> replay_catalog_index;
     auto resumable_source = source;
-    if (source_supplies_catalog && source.next_object && config_.draft_version == DraftVersion::kDraft22) {
+    if (source_supplies_catalog && source.next_object && is_draft22_or_later(config_.draft_version)) {
         resumable_source.next_object = [&]() -> std::optional<LiveObject> {
             if (replay_catalog_index && *replay_catalog_index < catalog_chain.size()) {
                 return catalog_chain[(*replay_catalog_index)++];
@@ -909,19 +920,20 @@ transport::TransportStatus Publisher::publish_live_objects(const LiveObjectSourc
         }
 
         status = active->session->publish_live_objects(
-            source_supplies_catalog && config_.draft_version == DraftVersion::kDraft22 ? resumable_source : source,
+            source_supplies_catalog && is_draft22_or_later(config_.draft_version) ? resumable_source : source,
             config_.draft_version);
         if (!status.ok && stop_requested()) {
             return finish_stopped_publish(active, true);
         }
-        if (!status.ok && status.migration_uri && config_.draft_version == DraftVersion::kDraft22) {
+        if (!status.ok && status.migration_uri && is_draft22_or_later(config_.draft_version)) {
             const auto snapshot = active->session->publish_stats();
             prior_bytes += snapshot.bytes_published;
             prior_objects += snapshot.objects_published;
             prior_groups += snapshot.groups_published;
             static_cast<void>(active->close(0));
             clear_active_session(active, false, {});
-            const auto migration_status = prepare_migration(status, migrations, resolved_endpoint);
+            const auto migration_status =
+                prepare_migration(status, migrations, config_.draft_version, resolved_endpoint);
             if (!migration_status.ok) {
                 clear_active_session(active, false, migration_status.message);
                 return migration_status;
@@ -1106,6 +1118,14 @@ std::string Publisher::stats_json() const {
        << "\"lastError\":\"" << json_escape(snapshot.last_error) << "\""
        << "}";
     return os.str();
+}
+
+bool Publisher::routes_to_libmoq() const {
+#ifdef OPENMOQ_ENABLE_LIBMOQ_PUBLISHER
+    return !transport_factory_injected_ && libmoq_publishes_draft(config_.draft_version);
+#else
+    return false;
+#endif
 }
 
 Publisher::TransportFactory Publisher::default_transport_factory() {

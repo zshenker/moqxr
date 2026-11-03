@@ -12,7 +12,7 @@ DraftProfile draft_profile(DraftVersion version) {
                 .subscribe_namespace_label = "Track Namespace",
                 .track_alias_label = "Track Alias",
                 .object_status_label = "Object Status",
-                .notes = "Primary profile. Use this for baseline publisher interoperability.",
+                .notes = "Legacy profile retained for API callers and baseline interoperability.",
             };
         case DraftVersion::kDraft16:
             return {
@@ -36,7 +36,16 @@ DraftProfile draft_profile(DraftVersion version) {
                 .subscribe_namespace_label = "Track Namespace",
                 .track_alias_label = "Track Alias",
                 .object_status_label = "Object Status",
-                .notes = "Current target profile. Control/request stream semantics differ from draft-16.",
+                .notes = "Draft-18 profile. Control/request stream semantics differ from draft-16.",
+            };
+        case DraftVersion::kDraft23:
+            return {
+                .version = version,
+                .subscribe_namespace_label = "Track Namespace",
+                .track_alias_label = "Track Alias",
+                .object_status_label = "Object Status",
+                .notes = "Current target profile (draft-23). Varint control message Length, PAUSED replaces FORWARD, "
+                         "REQUEST_ERROR carries Error Details, overlapping namespace subscriptions.",
             };
         case DraftVersion::kDraft22:
         case DraftVersion::kDraft21:
@@ -67,6 +76,8 @@ std::string to_string(DraftVersion version) {
             return "draft-21";
         case DraftVersion::kDraft22:
             return "draft-22";
+        case DraftVersion::kDraft23:
+            return "draft-23";
     }
 
     throw std::runtime_error("unreachable draft version");
@@ -86,6 +97,8 @@ std::string default_alpn(DraftVersion version) {
             return "moqt-21";
         case DraftVersion::kDraft22:
             return "moqt-22";
+        case DraftVersion::kDraft23:
+            return "moqt-23";
     }
 
     throw std::runtime_error("unreachable draft version");

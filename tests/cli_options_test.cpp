@@ -445,6 +445,14 @@ int main() {
         ok &= expect(false, std::string("--draft 22 must parse: ") + error.what());
     }
 
+    try {
+        const auto options = parse({"openmoq-publisher", "--input", "sample.mp4", "--draft", "23"});
+        ok &= expect(options.draft_version == openmoq::publisher::DraftVersion::kDraft23,
+                     "expected --draft 23 to select draft-23 mode");
+    } catch (const std::exception& error) {
+        ok &= expect(false, std::string("--draft 23 must parse: ") + error.what());
+    }
+
     {
         bool threw = false;
         try {
@@ -1224,8 +1232,8 @@ int main() {
     }
 
     ok &= expect(parse({"publisher", "--input", "sample.mp4"}).draft_version ==
-                     openmoq::publisher::DraftVersion::kDraft18,
-                 "CLI defaults to draft-18");
+                     openmoq::publisher::DraftVersion::kDraft23,
+                 "CLI defaults to draft-23");
     try {
         parse({"publisher", "--input", "sample.mp4", "--packaging", "loc"});
     } catch (const std::exception& error) {

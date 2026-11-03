@@ -41,7 +41,7 @@ struct Args {
     int seconds = 3;
     bool forward = true;
     bool insecure_skip_verify = false;
-    publisher::DraftVersion draft = publisher::DraftVersion::kDraft18;
+    publisher::DraftVersion draft = publisher::DraftVersion::kDraft23;
     auth_example::TokenEncoding token_encoding = auth_example::TokenEncoding::kAuto;
     std::optional<TokenWrapper> token_wrapper;
     publisher::cat4moq::Profile profile = publisher::cat4moq::Profile::kMoqxCompat;
@@ -86,7 +86,16 @@ publisher::DraftVersion parse_draft(std::string_view value) {
     if (value == "18") {
         return publisher::DraftVersion::kDraft18;
     }
-    throw std::runtime_error("--draft must be one of: 14, 16, 17, 18");
+    if (value == "21") {
+        return publisher::DraftVersion::kDraft21;
+    }
+    if (value == "22") {
+        return publisher::DraftVersion::kDraft22;
+    }
+    if (value == "23") {
+        return publisher::DraftVersion::kDraft23;
+    }
+    throw std::runtime_error("--draft must be one of: 14, 16, 17, 18, 21, 22, 23");
 }
 
 TokenWrapper parse_token_wrapper(std::string_view value) {
@@ -292,7 +301,7 @@ void print_usage(const char* argv0) {
         << "  --endpoint URL                  Default: https://127.0.0.1:4433/moq\n"
         << "  --namespace NAME                Default: cat4moq.example\n"
         << "  --track NAME                    Default: video\n"
-        << "  --draft 14|16|17|18             Default: 18\n"
+        << "  --draft 14|16|17|18|21|22|23    Default: 23\n"
         << "  --seconds N                     Default: 3\n"
         << "  --forward 0|1                   Default: 1\n"
         << "  --token-file PATH               Use one token for setup and action requests\n"

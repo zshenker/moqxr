@@ -43,7 +43,7 @@ struct DrmSystemConfig {
 };
 
 struct PublisherConfig {
-    DraftVersion draft_version = DraftVersion::kDraft18;
+    DraftVersion draft_version = DraftVersion::kDraft23;
     std::string track_namespace = "media";
     bool forward = false;
     bool publish_catalog = false;
@@ -282,12 +282,15 @@ private:
     void clear_active_session(const std::shared_ptr<ActiveSession>& active,
                               bool connected,
                               const std::string& last_error) const;
+    // Whether a publish goes to the libmoq backend: in libmoq builds, with no
+    // injected TransportFactory, for a draft libmoq speaks (16 or 18).
+    bool routes_to_libmoq() const;
 
     PublisherConfig config_;
     TransportFactory transport_factory_;
     // True when the caller injected a custom TransportFactory (e.g. a test
-    // mock). When false and libmoq is available, batch publishing prefers the
-    // libmoq service-tier path over the local MoqtSession transport.
+    // mock). When false and libmoq is available, publishing on drafts 16 and
+    // 18 prefers the libmoq service-tier path over the local MoqtSession.
     bool transport_factory_injected_ = false;
     mutable std::mutex state_mutex_;
     mutable std::shared_ptr<ActiveSession> active_session_;
